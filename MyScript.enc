@@ -17,11 +17,24 @@ end
 -- (There are open-source pure-Lua AES-256-CBC snippets you can drop in.)
 -- It should expose: decrypt_cbc(cipherBytes, keyBytes, ivBytes)
 
--- Example placeholder:
 local AES = {}
+
+-- (helpers: xor16, pkcs7_unpad, Sbox/InvSbox tables, key expansion, decryptblock, etc.)
+
 function AES.decrypt_cbc(cipher, key, iv)
-    -- TODO: paste AES-256-CBC decrypt implementation here
-    return "print('Hello from decrypted script!')" -- placeholder
+    assert(#key == 32, "AES-256 key must be 32 bytes")
+    assert(#iv  == 16, "IV must be 16 bytes")
+    assert(#cipher % 16 == 0, "Ciphertext must be a multiple of 16 bytes")
+
+    local out = {}
+    local prev = iv
+    for i = 1, #cipher, 16 do
+        local cblock = cipher:sub(i, i+15)
+        local pblock = decryptblock(cblock, key)
+        out[#out+1] = xor16(pblock, prev)
+        prev = cblock
+    end
+    return pkcs7_unpad(table.concat(out))
 end
 
 -- Decrypt + execute
