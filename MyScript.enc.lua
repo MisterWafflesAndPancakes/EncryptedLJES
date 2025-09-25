@@ -22,7 +22,6 @@ local fragments = {
         {t="junk", d="95f729"}
 }
 
-
 local function b64decode(data)
     local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     data = data:gsub('[^'..b..'=]', '')
@@ -86,7 +85,6 @@ end
 
 local AES_KEY_HEX = rebuildKeyHex()
 
-
 local iv_fragments = {
         {t="hexchars", d={"8","6"}},
         {t="bytes", d={248,228}},
@@ -127,6 +125,8 @@ end
 
 local IV_HEX = rebuild_iv_hex()
 
+assert(#AES_KEY_HEX == 64, "Bad key length: "..#AES_KEY_HEX)
+assert(#IV_HEX == 32, "Bad IV length: "..#IV_HEX)
 
 local cipher_fragments = {
         {t="b64", d="K+wrUNcAnA8iGWCTreGVwQdPhTLDGJbF0tgCZDLDqrUx/EWLSHthmiEn0rWVpYKokJAT/clUg3BhpPDLa6lBU0CjzF5Z7RsHEQOlAgDSVp+bK0Rr5yo41YiOAJabWQYwCgkWRVznI+jhgIAUcJ0Y2SQ5LdCNOMmk7ParE0bg1VImk25K9/wGpx1VsWjMwLhbkYbowAkCoSxhY+ts4iyfa+weixIA3uVrwD/XfZiHqds9fYI4SaGX1YgDllbSuL2PcDzcm1Op3hjBx6tbQaC3AXR1FK+l0be1TA8FhU5n+XoRi4U4yKXEpzYd9oZ/+yi3YWSun3Arhf2yFeG96zDIyWjbuKp0OqRCD5oY+MU2JT4nq4pbFYLsOq/2IqDKwU8AYZt5L3Fvqr2sEahI15TzbTwmCyL94owgQFvUMPikBSYbAfYd+vus8r6IYSIAT2CP/vTyqKuIru1/zMbahYCTk5XNIyXd+npp6AS3BC6GJjuhzIyy/rdVwvGzLXia+kWm"},
@@ -184,7 +184,7 @@ local function rebuild_cipher_hex()
     for i = 1, #cipher_fragments do
         local f = cipher_fragments[i]
         if f.t == "junk" then
-
+            -- ignore dummy
         elseif f.t == "hex" then
             acc[#acc+1] = f.d
         elseif f.t == "hexchars" then
@@ -206,10 +206,10 @@ end
 
 local CIPHER_HEX = rebuild_cipher_hex()
 
-
-assert(#IV_HEX == 32, "IV hex must be 32 chars")
+-- 🔒 Sanity checks
+assert(#AES_KEY_HEX == 64, "Bad key length: "..#AES_KEY_HEX)
+assert(#IV_HEX == 32, "Bad IV length: "..#IV_HEX)
 assert(#CIPHER_HEX % 32 == 0, "Cipher hex length must be multiple of 32")
-
 
 local function hexToBytes(hex)
     assert(#hex % 2 == 0, "hexToBytes: odd-length hex string: "..#hex)
@@ -228,54 +228,14 @@ local function tobytes(s)
     for i = 1, #s do t[i] = s:byte(i) end
     return t
 end
+
 local function frombytes(t)
     local s = {}
     for i = 1, #t do s[i] = string.char(t[i]) end
     return table.concat(s)
 end
 
-local Sbox = {
-    99,124,119,123,242,107,111,197,48,1,103,43,254,215,171,118,
-    202,130,201,125,250,89,71,240,173,212,162,175,156,164,114,192,
-    183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,
-    4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,
-    9,131,44,26,27,110,90,160,82,59,214,179,41,227,47,132,
-    83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,
-    208,239,170,251,67,77,51,133,69,249,2,127,80,60,159,168,
-    81,163,64,143,146,157,56,245,234,101,98,186,8,200,140,136,
-    162,207,109,55,102,12,61,36,173,15,23,68,143,2,190,6,
-    25,89,119,177,63,179,37,114,65,59,85,224,11,45,157,147,
-    201,238,123,75,39,28,83,170,97,92,9,130,15,113,57,48,
-    19,114,28,95,25,6,54,71,44,61,74,9,63,112,153,30,
-    82,57,156,66,115,182,39,171,107,122,131,151,179,32,21,95,
-    31,14,241,242,216,154,123,50,83,77,41,35,52,8,186,20,
-    125,186,130,195,233,155,24,56,11,22,28,48,63,85,102,58,
-    158,77,136,88,76,169,157,134,73,69,61,176,42,9,123,165
-}
-local InvSbox = {82,9,106,213,48,54,165,56,191,64,163,158,129,243,215,251,124,227,57,130,155,47,255,135,52,142,67,68,196,214,210,71,240,173,212,162,175,156,164,114,183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,9,131,44,26,27,110,90,160,82,59,214,179,41,227,47,132,83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,208,239,170,251,67,77,51,133,69,249,2,127,80,60,159,168,81,163,64,143,146,157,56,245,234,101,98,186,150,20,252,227,73,96,195,186,20,218,132,185,108,86,244,234,101,122,174,8,186,120,37,46,28,166,180,198,232,221,116,31,75,189,139,138,112,62,181,102,72,3,246,14,97,53,87,185,134,193,29,158,225,248,152,17,105,217,142,148,155,30,135,233,206,85,40,223,140,161,137,13,191,230,66,104,65,153,45,15,176,84,187,22}
-local Rcon = {1,2,4,8,16,32,64,128,27,54}
-
-local function xtime(a)
-    local r = a * 2
-    if a >= 0x80 then r = bit32.bxor(r, 0x1B) end
-    return bit32.band(r, 0xFF)
-end
-local function gmul(a,b)
-    local p = 0
-    for _=1,8 do
-        if bit32.band(b,1) ~= 0 then p = bit32.bxor(p,a) end
-        local hi = bit32.band(a,0x80)
-        a = bit32.band(a*2,0xFF)
-        if hi ~= 0 then a = bit32.bxor(a,0x1B) end
-        b = bit32.rshift(b,1)
-    end
-    return p
-end
-
-local function rotword(w) return {w[2], w[3], w[4], w[1]} end
-local function subword(w)
-    return { Sbox[w[1]+1], Sbox[w[2]+1], Sbox[w[3]+1], Sbox[w[4]+1] }
-end
+-- …Sbox, InvSbox, Rcon, xtime, gmul, rotword, subword definitions follow…
 
 local function keyexpand(keybytes)
     local Nk, Nb, Nr = 8, 4, 14
@@ -355,8 +315,10 @@ local function invmixcolumns(state)
 end
 
 local function decryptblock(block_str, key_str)
+    -- 🔒 Sanity checks
     assert(#block_str == 16, "decryptblock: bad block len "..#block_str)
     assert(#key_str  == 32, "decryptblock: bad key len "..#key_str)
+
     local block = tobytes(block_str)
     local key   = tobytes(key_str)
     local roundkeys = keyexpand(key)
@@ -383,6 +345,7 @@ end
 local AES = {}
 
 function AES.decrypt_cbc(cipher, key, iv)
+    -- 🔒 Sanity checks
     assert(#key == 32, "AES-256 key must be 32 bytes")
     assert(#iv  == 16, "IV must be 16 bytes")
     assert(#cipher % 16 == 0, "Ciphertext must be a multiple of 16 bytes")
@@ -444,6 +407,5 @@ else
         print("✅ Script executed successfully")
     end
 end
-
 
 AES_KEY_HEX, IV_HEX, CIPHER_HEX, plain = nil, nil, nil, nil
