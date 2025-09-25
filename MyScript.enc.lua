@@ -1,4 +1,3 @@
-
 local fragments = {
         {t="hex", d="a8"},
         {t="bytes", d={48,20,52}},
